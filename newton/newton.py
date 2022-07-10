@@ -1,14 +1,14 @@
 import numpy as np
-import scipy.linalg as slin
-import scipy.sparse.linalg as splin
+import scipy.linalg as sla
+from scipy.sparse.linalg import LinearOperator
 
+from linalg.precond import Preconditioner
 from linalg.krylov import gmres
-from linalg.multigrid import R, P
 
 
-def compute_eta(etakm1: float, rkm1: float, rk: float, eta_max=0.1, gamma=0.5, epsilon=1e-9):
+def compute_eta(etakm1: float, rk: float, rkm1: float, eta_max=0.1, gamma=0.5, epsilon=1e-9):
     """"
-    Computes the tolerance for the next gmres step.
+    Computes the tolerance for the next step
     """
     a = gamma*(rk/rkm1)**2
     b = gamma*etakm1**2
@@ -21,106 +21,60 @@ def compute_eta(etakm1: float, rkm1: float, rk: float, eta_max=0.1, gamma=0.5, e
     return min(eta_max, max(c, epsilon/(2*rk)))
 
 
-def NK(F, J, u0, eta_max=0.1, max_it=10, M=None):
+def NK(F, J, u0: np.array, eta_max=0.1, max_it=10, M=None):
     """
     Solves the nonlinear system of equations F with jacobian J using a Newton-Krylov solver
     """
     rtol = 1e-9
 
+    # Initialize preconditioner
     if M is None:
-        M = lambda _, __: lambda x: x
+        M = Preconditioner(J)
 
-    u = u0.copy()
-
-    r0 = slin.norm(F(u0))
-    rkm1 = np.nan
-    rk = r0
-    r = rk
-
+    # Compute initial rhs, residual and target tolerance 
+    f0 = F(u0)
+    r0 = sla.norm(f0)
     eta = eta_max
 
-    etas = []
-    residuals = [r0]
-    nits = []
-    sols = [u0]
+    # Initialize lists (solutions, residuals, inner iterations, etas)
+    lists = [u0], [r0], [0], [eta]
 
-    k = 0
-    while r/r0 > rtol and k < max_it:
-        jk = J(u)
-        fk = F(u)
-        mk_fun = M(jk, u.size[0])
+    # Initialize loop
+    k, uk, fk, rk = 0, u0.copy(), f0, r0
+    while rk/r0 > rtol and k < max_it:
+        # Linearize around current solution
+        jk = J(uk, fk)
+        mk = M.make(jk)
 
-        s, i, r = gmres(splin.aslinearoperator(jk), -fk, mk_fun, tol=eta)
-        u += s
+        # Solve linearized system
+        dk, ik, _ = gmres(jk, -fk, tol=eta, m_right=mk)
+        ukp1 = uk + dk
+        fkp1 = F(ukp1)
+        rkp1 = sla.norm(fkp1)
 
-        rkm1 = rk
-        rk = slin.norm(F(u))
-        eta = compute_eta(eta, rkm1, rk)
-
-        residuals.append(r/r0)
-        etas.append(eta)
-        nits.append(i)
-        sols.append(u)
+        # Update quantities
+        uk, fk, rk, eta = ukp1, fkp1, rkp1, compute_eta(eta, rkp1, rk)
+        
+        for l, i in zip(lists, (uk, rk, ik, eta)): l.append(i)
         k += 1
 
-    return residuals, sols, etas, nits
+    return lists
 
-
-def JFNK(F, u0, eta_max=0.1, max_it=10, M=None):
+def JFNK(F, u0: np.array, eta_max=0.1, max_it=10, M=None):
     """
-    Solves the nonlinear system of equations F using a jacobian free Newton-Krylov solver
+    Solves nonlinear system of equations F using a Jacobian-Free Newton-Krylov solver
     """
-    n = u0.shape[0]
-    tol = 1e-9
-    mrs = 1e-7
+    # Define Jacobian approximation
+    sqreps = np.sqrt(np.finfo(float).eps)
+    def Jfun(uk, fk, d):
+        dn = sla.norm(d)        
+        h = 1 if dn == 0 else sqreps/dn
+        return (F(uk + h * d) - fk)/h
+    
+    # J is a function which returns a linear operator given 
+    Jshape = (u0.shape[0], u0.shape[0])
+    matvec = lambda uk, fk: lambda x: Jfun(uk, fk, x)
+    J = lambda uk, fk: LinearOperator(Jshape, matvec(uk, fk))
 
-    if M is None:
-        M = lambda _, s: splin.LinearOperator((s, s), lambda x: x)
-
-    u = u0.copy()
-
-    r0 = slin.norm(F(u0))
-    rk = r0
-    rkm1 = r0
-
-    eta = eta_max
-
-    # Creates a function which approximates multiplication of the jacobian
-    def approx_J(Fy, y):
-        S = y.shape[0]
-
-        def derivative(q):
-            norm_q = slin.norm(q)
-            j_eps = mrs / norm_q if norm_q != 0 else 1
-            return (F(y + j_eps * q.reshape((S, ))) - Fy) / j_eps
-
-        # TODO: Move this responsibility to multigrid. Newton should not know about its preconditioner
-        def j_wrapper(k):
-            if k == S:
-                return splin.LinearOperator((S, S), derivative)
-            else:
-                return R(2*k) * j_wrapper(2*k) * P(k)
-        return j_wrapper
-
-    nits = [0]
-    residuals = [r0]
-    j = 0
-    while rk/r0 > tol and j < max_it:
-        fk = F(u)
-        jk = approx_J(fk, u)
-        mk_fun = M(jk, n)
-
-        s, i, r = gmres(jk(n), -fk, tol=eta, k_max=30, m_right=mk_fun)
-        u += s
-
-        rkm1 = rk
-        rk = slin.norm(F(u))
-        eta = compute_eta(eta, rkm1, rk)
-
-        nits.append(i)
-        residuals.append(r)
-        print("Newton({}), nGMRES({}), q = {}".format(j, i, int(np.log10(rk/r0))))
-
-        j += 1
-
-    return u
+    # Solve using NK
+    return NK(F, J, u0, eta_max=eta_max, max_it=max_it, M=M)

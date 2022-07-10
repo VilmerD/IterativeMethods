@@ -1,4 +1,3 @@
-from crypt import METHOD_BLOWFISH
 import unittest
 
 import numpy as np
@@ -8,6 +7,9 @@ import scipy.sparse.linalg as spla
 from krylov import gmres
 
 class TestGMRES(unittest.TestCase):
+    m_list: list = None
+    positive_definite_systems: list = None
+    badly_conditioned_systems: list = None
 
     def setUp(self):
         # System sizes
@@ -28,9 +30,23 @@ class TestGMRES(unittest.TestCase):
 
         self.positive_definite_systems = positive_definite_systems
 
-        # TODO: Generate poorly conditioned systems
-        rcond = 1e16
+        # Generate badly conditioned systems
+        cond = 1e16
+        badly_conditioned_systems = []
+        for m in self.m_list:
+            # Generate SPD matrix A with large cond
+            A = np.random.rand(m, m)
+            A = (A + A.T)/2
+            _, w = sla.eig(A)
+            d = np.diag(np.logspace(0, np.log10(cond), m))
+            A = w.T.dot(d.dot(w))
 
+            # Generate b
+            b = np.random.rand(m)
+
+            badly_conditioned_systems.append((A, b))
+
+        self.badly_conditioned_systems = badly_conditioned_systems
 
     def test_return_size(self):
         """
@@ -70,13 +86,27 @@ class TestGMRES(unittest.TestCase):
                 _, v = sla.eig(A.dot(A))
                 _, nits, _ = gmres(A, v[:, 0])
                 self.assertGreaterEqual(2, nits)
+    
+    def test_n_step_convergance(self):
+        """
+        Tests that GMRES converges in n steps or less given b is eigenvector to A^n
+        """
+        A, _ = self.positive_definite_systems[-1]
+        nspace = np.round(np.logspace(0, np.log10(A.shape[0])-1, 4))
+        nn = np.random.randint(nspace[:-1], nspace[1:])
+        for i, n in enumerate(nn):
+            with self.subTest(i=i):
+                _, v = sla.eig(np.linalg.matrix_power(A, n))
+                _, nits, _ = gmres(A, v[:, -1])
+                self.assertGreaterEqual(n, nits)
 
     def test_tolerance(self):
         """
         Tests that the tolerance is fulfilled
         """
         tols = (1, 1e-3, 1e-9)
-        for i, ((A, b), t) in enumerate(zip(self.positive_definite_systems, tols)):
+        A, b = self.positive_definite_systems[-1]
+        for i, t in enumerate(tols):
             with self.subTest(i=i):
                 x, _, _ = gmres(A, b, k_max=A.shape[0], tol=t)
                 self.assertLessEqual(sla.norm(b - A.dot(x)), t*sla.norm(b))
@@ -96,7 +126,8 @@ class TestGMRES(unittest.TestCase):
         Tests that the tolerance is fulfilled with a preconditioner
         """
         tols = (1, 1e-3, 1e-9)
-        for i, ((A, b), t) in enumerate(zip(self.positive_definite_systems, tols)):
+        A, b = self.positive_definite_systems[-1]
+        for i, t in enumerate(tols):
             M = spla.LinearOperator(A.shape, matvec=lambda x: spla.spilu(A).solve(x))
             with self.subTest(i=i):
                 x, _, _ = gmres(A, b, k_max=A.shape[0], tol=t, m_right=M)
@@ -125,7 +156,10 @@ class TestGMRES(unittest.TestCase):
     
     def test_hard_problem(self):
         """ Tests that no errors are found if it can't converge """
-        pass
+        for i, (A, b) in enumerate(self.badly_conditioned_systems):
+            with self.subTest(i=i):
+                _, nits, _ = gmres(A, b, k_max=A.shape[0])
+                self.assertEqual(nits, A.shape[0])
 
 if __name__=='__main__':
     unittest.main()

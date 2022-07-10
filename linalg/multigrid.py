@@ -1,168 +1,191 @@
 import numpy as np
-import scipy.sparse.linalg as splin
+from scipy.sparse.linalg import LinearOperator
+import scipy.linalg as scla
+
+from linalg.smoothers import RK2Smoother, Smoother
+
+class GridInterface():
+    def restrict(self, v) -> np.array: pass
+
+    def prolong(self, v) -> np.array: pass
+
+class AggregateInterface1D(GridInterface):
+    def restrict(self, v):
+        if v.shape[0] % 2 == 0:
+            return (v[:-1:2] + v[1::2]) / 2
+        else: 
+            raise ValueError()
+
+    def prolong(self, v):
+        return np.repeat(v, 2)
+
+class AggregateInterface2D(GridInterface):
+    def restrict(v):
+        n = int(v.shape[0] ** 0.5)
+        vmat = v.reshape((n, n))
+        mat = 0.25 * (vmat[0::2, 0::2] + vmat[1::2, 1::2] + vmat[0::2, 1::2] + vmat[1::2, 0::2])
+        return mat.reshape((int(n ** 2 / 4), ))
+
+    def prolong(v):
+        n = int(v.shape[0] ** 0.5)
+        vs = v.reshape((n, n))
+        vnew = np.zeros((n * 2, n * 2))
+        vnew[0::2, 0::2] = vs
+        vnew[1::2, 1::2] = vs
+        vnew[1::2, 0::2] = vs
+        vnew[0::2, 1::2] = vs
+        return vnew.reshape((4 * n ** 2, ))
+
+class DefaultInterface1D(GridInterface):
+    def restrict(self, v):
+        if (v.shape[0] - 1) % 2 == 0:
+            return (v[0:-2:2] + 2 * v[1:-1:2] + v[2::2]) / 4
+        else:
+            raise ValueError()
+
+    def prolong(self, v):
+        u = np.zeros(len(v) * 2 + 1)
+        u[1:-1:2] = v
+        return (2 * u + np.roll(u, 1) + np.roll(u, -1)) / 2
 
 
-def v_cycle(a, v0, f0, smoother, gamma=1, l0=3, pre=1, post=1):
-    # Initialize grid
-    grid = Grid(v0, f0, l0)
+class ScalableLinearOperator(LinearOperator):
+    def __init__(self, linop: LinearOperator, grid_int: GridInterface):
+        self.shape = linop.shape
+        self.linop = linop
+        self.grid_interface = grid_int
 
-    def v_cycle_recursive(level):
-        v, f = Grid.get_level(level)
-        if level > 0:
-            vm1, fm1 = Grid.get_level(level - 1)
+        # Initialize possible shapes
+        v = np.zeros(self.shape[0])
+        self.shapes = [v.shape]
+        has_next = True
+        while has_next:
+            try:
+                v = grid_int.restrict(v)
+                self.shapes.append(v.shape)
+            except ValueError:
+                has_next = False
 
+    def _matvec(self, v):
+        if v.shape in self.shapes:
+            if v.shape == self.shapes[0]:
+                return self.linop.dot(v)
+            else:
+                vm1 = self._matvec(self.grid_interface.prolong(v))
+                return self.grid_interface.restrict(vm1)
+        else:
+            raise ValueError
+
+
+    def _matmat(self, V):
+        if (V.shape[0], ) in self.shapes:
+            AV = []
+            for r in V:
+                AV.append(self._matvec(r))
+            return np.array(AV)
+        else:
+            raise ValueError
+
+    def to_dense(self, n):
+        return self._matmat(np.eye(n))
+
+class Multigrid:
+    def __init__(self, v0: np.array, f0: np.array, grdint: GridInterface, height: int):
+        self.v, self.f = v0, f0
+
+        self.prolong = grdint.prolong
+        self.restrict = grdint.restrict
+        if height > 0:
+            vm1 = grdint.restrict(v0)
+            fm1 = grdint.restrict(f0)
+
+            self.next_level = Multigrid(vm1, fm1, grdint, height-1)
+        else:
+            self.next_level = None
+
+
+    def reset_v(self):
+        """ Resets the grid levels """
+        self.v = np.zeros_like(self.v)
+        if self.hasNext():
+            self.next_level.reset_v()
+
+    def hasNext(self):
+        return self.next_level is not None
+
+
+def cycle(A: ScalableLinearOperator, top_floor: Multigrid, smoother: Smoother, pre=3, post=3, gamma=1):
+    """
+    Solves problem
+
+    Arguments
+        smoother:       smoother
+        pre:            number of presmoothing cycles
+        post:           number of postsmoothing cycles
+        gamma:          
+
+    Returns
+        x:              solution
+
+    """
+    def cycle_recursive(floor: Multigrid):
+        if floor.hasNext():
             # Presmooth
-            for _ in range(0, pre):
-                v = smoother(a, v, f)
-            fm1 = R.dot(a.dot(v) - f)
+            for _ in range(0, pre): floor.v = smoother.smooth(A, floor.v, floor.f)
+            
+            # Move error to next level
+            floor.next_level.f = floor.restrict(A._matvec(floor.v) - floor.f)
     
-            # Dive deeper
-            for _ in range(0, gamma):
-                v_cycle_recursive(level - 1)
-
-            # Correction
-            v = v - P.dot(vm1)
+            # Coarse grid correction
+            for _ in range(0, gamma): cycle_recursive(floor.next_level)
+            floor.v -= floor.next_level.prolong(floor.next_level.v)
 
             # Postsmooth
-            for _ in range(0, post):
-                v = smoother(a, v, f)
+            for _ in range(0, post): floor.v = smoother.smooth(A, floor.v, floor.f)
         else:
-            v = splin.spsolve(a.dot(np.eye(grid.bottom)), f)
-    
-    # Start cycle at top level
-    v_cycle_recursive(grid.height-1)
+            # Solve exactly
+            floor.v = scla.solve(A.to_dense(floor.v.shape[0]), floor.f)
 
-    # Return top level solution
-    return grid.get_level(grid.height-1)[0]
+    if scla.norm(top_floor.f) != 0:
+        # Start cycle at top level
+        cycle_recursive(top_floor)
 
+        # Return top level solution
+        return top_floor.v
+    else:
+        return np.zeros_like(top_floor.f)
 
-def FAS(A, v0, f, smoother, gamma=3, level0=5, pre=30):
-    grid = Grid(v0, f, level0)
-    epsilon = 0.9
+def test():
+    # Initialize grid
+    N, L = 128, 1
+    dx = L/(N + 1)
+    xx = np.linspace(0, 1, N+2)[1:-1]
 
-    def FAS_recursive(level):
-        current_level = grid.levels[level]
-        next_level = grid.levels[level - 1]
+    # Initialize rhs
+    f = 4
+    f0 = -(f*np.pi)**2*np.sin(xx*f*np.pi)
+    v0 = np.zeros_like(f0)
 
-        for k in range(0, pre):
-            current_level.v = smoother(A, current_level.v, current_level.f)
+    # Initialize second order discretization
+    C = np.hstack((np.array([-2, 1]), np.zeros(N-2)))/dx**2
+    A = scla.toeplitz(C)
 
-        if level > 0:
-            n = current_level.v.shape[0]
-            u_tilde = R(n) * current_level.v
-            next_level.f = A(int(n / 2)) * u_tilde + epsilon * R(n) * (current_level.f - A(n) * current_level.v)
-            for k in range(0, gamma):
-                FAS_recursive(level - 1)
-            current_level.v += P(int(n / 2)) * (next_level.v - u_tilde) / epsilon
+    # Setup multigrid
+    top = Multigrid(A, v0, f0, AggregateInterface1D(), 4)
 
-    FAS_recursive(grid.height)
-    return grid.levels[-1].v
+    # Smoother
+    smoother = RK2Smoother(0.33, lambda N: 1e-3/N)
 
+    # Solve
+    x = cycle(top, smoother, pre=10, post=10, gamma=3)
 
-def R(n):
-    return splin.LinearOperator((int(n / 2), n), agg_res)
+    # Plot
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    ax.plot(xx, x, 'g')
+    ax.plot(xx, scla.solve(A, f0), 'k')
+    ax.legend(('Approx', 'Solution'))
+    plt.show()
 
-
-def P(n):
-    return splin.LinearOperator((2 * n, n), agg_pro)
-
-
-def aggres2d(v):
-    n = int(v.shape[0] ** 0.5)
-    vmat = v.reshape((n, n))
-    mat = 0.25 * (vmat[0::2, 0::2] + vmat[1::2, 1::2] + vmat[0::2, 1::2] + vmat[1::2, 0::2])
-    return mat.reshape((int(n ** 2 / 4), ))
-
-
-def aggpro2d(v):
-    n = int(v.shape[0] ** 0.5)
-    vs = v.reshape((n, n))
-    vnew = np.zeros((n * 2, n * 2))
-    vnew[0::2, 0::2] = vs
-    vnew[1::2, 1::2] = vs
-    vnew[1::2, 0::2] = vs
-    vnew[0::2, 1::2] = vs
-    return vnew.reshape((4 * n ** 2, ))
-
-
-def default_res(v):
-    return (v[0:-2:2] + 2 * v[1:-1:2] + v[2::2]) / 4
-
-
-def default_pro(v):
-    u = np.zeros(len(v) * 2 + 1)
-    u[1:-1:2] = v
-    return (2 * u + np.roll(u, 1) + np.roll(u, -1)) / 2
-
-
-def agg_res(v):
-    return (v[:-1:2] + v[1::2]) / 2
-
-
-def agg_pro(v):
-    return np.repeat(v, 2)
-
-
-class Restrictor:
-    pass
-
-
-class Prolonger:
-    pass
-
-
-class Grid:
-    levels: list
-    ndims: int
-
-    def __init__(self, v0, f0, bottom, ndims=1):
-        self.ndims = ndims
-        top = int(np.log(v0.shape[0])/np.log(2)/ndims)
-        self.levels = [Grid.Level(2**(ndims*n)) for n in range(bottom, top)]
-        self.levels.append(Grid.Level(top, v0=v0, f0=f0))
-
-    def _get_top(self):
-        return self.levels[0].size
-
-    def _get_bottom(self):
-        return self.levels[-1].size
-
-    def _get_height(self):
-        return len(self.levels)
-
-    def get_level(self, level):
-        v = self.levels[level].v
-        f = self.levels[level].f
-        return (v, f)
-
-    top = property(_get_top)
-    bottom = property(_get_bottom)
-    height = property(_get_height)
-
-    class Level:
-        def __init__(self, n, v0=None, f0=None):
-            self.v = np.zeros(n) if v0 is None else v0
-            self.f = np.zeros(n) if f0 is None else f0
-
-        def _get_size(self):
-            return self.v.shape[0]
-
-        size = property(_get_size)
-
-
-v0 = np.zeros(128)
-f0 = v0.copy()
-g = Grid(v0, f0, 5)
-for l in g.levels:
-    print(l.v.shape)
-print(g.top)
-print(g.bottom)
-print(g.height)
-
-v = np.arange(0, 8)
-vm1 = agg_res(v)
-print(v)
-print(vm1)
-v = agg_pro(vm1)
-print(v)
-print(vm1)
+if __name__=='__main__':
+    test()

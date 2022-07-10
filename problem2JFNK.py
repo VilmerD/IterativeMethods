@@ -1,31 +1,62 @@
 import numpy as np
+from scipy.sparse.linalg import LinearOperator, spilu
 
-from newton.newton import JFNK
-from newton.preconditioners import multigrid_primer
+from newton.newton import JFNK, Preconditioner
 from project.project_matricies import *
 
+from linalg.smoothers import RK2Smoother
+from linalg.multigrid import Multigrid, cycle, AggregateInterface1D, DefaultInterface1D, ScalableLinearOperator
+
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 from time import time
 
 
-def calculate_pseudo_stepsize(a, dt, L, c1):
-    return lambda N: c1 * L / (a * dt * N)
 
 
-def run_spec(n):
+
+def run_spec(n, height, interface=AggregateInterface1D):
+    # Set up grid
     L = 2
-    x = interval(n, length=L)
-    u0 = func_u0(x)
-    dt = 0.1
     dx = L/n
+    x = np.linspace(0, L, n+1)[1:]
 
-    pseudo_step = calculate_pseudo_stepsize(max(u0), dt, L, 0.99)
-    t1 = time()
-    r, nits = JFNK(lambda u: F(u, dt, dx, u0), u0, M=multigrid_primer(0.33, pseudo_step))
-    t2 = time() - t1
-    return t2, np.array(r)/r[0], nits
+    # Initial condition
+    u0 = func_u0(x)
+    t0, tf = 0, 1
+    dt = 0.01
+
+    # Multigrid preconditioner
+    # Setup smoother
+    c1, a1 = 0.99, 0.33
+    hfun = lambda N: (c1 / max(u0)) * (dx / dt) / N
+    smoother = RK2Smoother(a1, hfun)
+
+    # Setup multigrid
+    pre, post, gamma = 5, 5, 1
+    mgpre = MultigridPreconditioner((n, n), interface, height, smoother, pre, post, gamma)
+
+    # Setup problem
+    tk, uk, U = t0, u0, [u0]
+    while tk < tf:
+        Func = lambda u: F(u, dt, dx, uk)
+        sols, res, nits, etas = JFNK(Func, uk, M=mgpre)
+        uk = sols[-1]
+
+        tk += dt
+        U.append(uk)
+
+    # Plot
+    plot = False
+    if plot:
+        fig, ax = plt.subplots()
+        ax.plot(x, sols[-1], 'g')
+        ax.plot(x, u0, 'k')
+        plt.legend('u($t_0 + \Delta t$)', 'u($t_0$)')
+        plt.show()
+    else:
+        animate(x, U)
+    return
 
 
 def run_specs():
@@ -61,7 +92,7 @@ def run_specs():
 def run_and_animate():
     L = 8
     n = 2 ** 6
-    x = interval(n, length=L)
+    x = np.linspace(0, L, n+1)[1:]
     Nt = 500
     u = np.zeros((n ** 2, Nt + 1))
     u[:, 0] = func_u02(x)
@@ -95,21 +126,15 @@ def animate2d(name):
         plt.show()
 
 
-def animate(name):
-    L = 2
-    u = np.load(name)
-    n = u[:, 1].shape[0]
-    x = interval(n, length=L)
-
+def animate(x, sols):
     fig = plt.figure()
-    ax = plt.axes(xlim=(0, L), ylim=(0, 4))
+    ax = plt.axes(xlim=(min(x), max(x)), ylim=(0, 4))
     line, = ax.plot([], [])
-    for uk in u.T[:, ]:
-        plt.cla()
-        plt.plot(x, uk)
-        plt.axis([0, L, 0, 4])
-        plt.pause(0.03)
+    for uk in sols:
+        line.set_data((x, uk))
+        plt.pause(0.05)
         plt.show()
 
 
-run_spec(128)
+# run_spec(3*2**6, 4)
+run_spec(3*2**6, 3, interface=AggregateInterface1D())

@@ -1,26 +1,29 @@
-import numpy as np
 import scipy.sparse as sp
 from scipy.sparse import extract
 from scipy.sparse import linalg as splin
 
+class Smoother():
+    def smooth(self, A, x, b): return x
 
-def gauss_seidel(a, x, b):
-    dl = extract.tril(a, 0)                             # lower plus diagonal matrix
-    u = sp.csr_matrix(- extract.triu(a, 1))             # upper matrix
-    return splin.spsolve_triangular(dl, u.dot(x) + b)
+class RK2Smoother(Smoother):
+    def __init__(self, a1, hfun):
+        self.a1 = a1
+        self.hfun = hfun
 
+    def smooth(self, A, x, b):
+        a1, h = self.a1, self.hfun(A.shape[0])
+        return x + h*(A._matvec(x + a1*h*(A._matvec(x) - b)) - b)
 
-def jacobi(a, x, b, w=2/3):
-    d = a.diagonal()[0]
-    return x - w * (a.dot(x) - b) / d
+class GaussSeidelSmoother(Smoother):
+    def smooth(self, a, x, b):
+        dl = extract.tril(a, 0)                             # lower plus diagonal matrix
+        u = sp.csr_matrix(extract.triu(a, 1))               # upper matrix
+        return splin.spsolve_triangular(dl, u.dot(x) + b)
 
+class JacobiSmoother(Smoother):
+    def __init__(self, w=2/3):
+        self.w = w
 
-def RungeKutta(a1, pseudo_timestep):
-    def RK2(A, x, b):
-        N = b.shape[0]
-        h = pseudo_timestep(N)
-
-        def rhs(u):
-            return b - A(N) * u
-        return x + h * rhs(x + a1 * h * rhs(x))
-    return RK2
+    def smooth(self, a, x, b):
+        d = a.diagonal()[0]
+        return x - self.w * (a.dot(x) - b) / d
