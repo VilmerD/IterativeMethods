@@ -2,34 +2,37 @@ import numpy as np
 import scipy.linalg as sla
 from scipy.sparse.linalg import LinearOperator
 
-from linalg.precond import Preconditioner
+from newton.precondition import Preconditioner
 from linalg.krylov import gmres
 
 
-def compute_eta(etakm1: float, rk: float, rkm1: float, eta_max=0.1, gamma=0.5, epsilon=1e-9):
+def compute_eta(rk: float, rkm1: float, etakm1: float, rtol: float, \
+    eta_max=0.1, gamma=0.5):
     """"
     Computes the tolerance for the next step
     """
+    # Start rough, and refine
     a = gamma*(rk/rkm1)**2
-    b = gamma*etakm1**2
+    b = min(eta_max, a)         # Ensure refine
+    c = gamma*etakm1**2         
 
-    if b < 0.1:
-        c = min(eta_max, a)
+    if c <= 0.1:
+        d = b
     else:
-        c = min(eta_max, max(a, b))
+        d = min(eta_max, max(a, c))
     
-    return min(eta_max, max(c, epsilon/(2*rk)))
+    # Prevent oversolving
+    eta = min(eta_max, max(d, (rtol/2)/rk))
+    return eta
 
 
-def NK(F, J, u0: np.array, eta_max=0.1, max_it=10, M=None):
+def NK(F, J, u0: np.array, rtol=1e-6, eta_max=0.1, max_it=10, M=None):
     """
     Solves the nonlinear system of equations F with jacobian J using a Newton-Krylov solver
     """
-    rtol = 1e-9
-
     # Initialize preconditioner
     if M is None:
-        M = Preconditioner(J)
+        M = Preconditioner()
 
     # Compute initial rhs, residual and target tolerance 
     f0 = F(u0)
@@ -47,20 +50,20 @@ def NK(F, J, u0: np.array, eta_max=0.1, max_it=10, M=None):
         mk = M.make(jk)
 
         # Solve linearized system
-        dk, ik, _ = gmres(jk, -fk, tol=eta, m_right=mk)
+        dk, ik, _ = gmres(jk, -fk, tol=eta*rk, m_right=mk)
         ukp1 = uk + dk
         fkp1 = F(ukp1)
         rkp1 = sla.norm(fkp1)
 
         # Update quantities
-        uk, fk, rk, eta = ukp1, fkp1, rkp1, compute_eta(eta, rkp1, rk)
+        uk, fk, rk, eta = ukp1, fkp1, rkp1, compute_eta(rkp1, rk, eta, rtol)
         
         for l, i in zip(lists, (uk, rk, ik, eta)): l.append(i)
         k += 1
 
     return lists
 
-def JFNK(F, u0: np.array, eta_max=0.1, max_it=10, M=None):
+def JFNK(F, u0: np.array, rtol=1e-6, eta_max=0.1, max_it=10, M=None):
     """
     Solves nonlinear system of equations F using a Jacobian-Free Newton-Krylov solver
     """
@@ -71,10 +74,9 @@ def JFNK(F, u0: np.array, eta_max=0.1, max_it=10, M=None):
         h = 1 if dn == 0 else sqreps/dn
         return (F(uk + h * d) - fk)/h
     
-    # J is a function which returns a linear operator given 
     Jshape = (u0.shape[0], u0.shape[0])
     matvec = lambda uk, fk: lambda x: Jfun(uk, fk, x)
     J = lambda uk, fk: LinearOperator(Jshape, matvec(uk, fk))
 
     # Solve using NK
-    return NK(F, J, u0, eta_max=eta_max, max_it=max_it, M=M)
+    return NK(F, J, u0, rtol=rtol, eta_max=eta_max, max_it=max_it, M=M)

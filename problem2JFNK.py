@@ -1,71 +1,78 @@
+# Numpy and scipy stuff
+from enum import unique
 import numpy as np
-from scipy.sparse.linalg import LinearOperator, spilu
 
-from newton.newton import JFNK, Preconditioner
-from project.project_matricies import *
+# Problems
+import project.problems as problems
 
+# Newton solvers 
+from newton.newton import JFNK
+from newton.precondition import MultigridPreconditioner
+
+# Multigrid
 from linalg.smoothers import RK2Smoother
-from linalg.multigrid import Multigrid, cycle, AggregateInterface1D, DefaultInterface1D, ScalableLinearOperator
+import linalg.multigrid as mg
 
+# Plotting
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import matplotlib.colors as colors
+from matplotlib.animation import FuncAnimation
 
+# Misc
 from time import time
+from primefac import primefac
 
 
-
-
-
-def run_spec(n, height, interface=AggregateInterface1D):
+def solve_problem(n, height=None, interface=mg.AggregateInterface1D(), smoothpara=(3, 3, 1)):
+    """
+    Solves the project for a grid with n unknowns
+    """
     # Set up grid
     L = 2
     dx = L/n
     x = np.linspace(0, L, n+1)[1:]
 
     # Initial condition
-    u0 = func_u0(x)
-    t0, tf = 0, 1
+    u0 = problems.u_ic(x)
     dt = 0.01
+    t0, tf = 0, dt
 
     # Multigrid preconditioner
+    if height is None:
+        height = len(np.array([f for f in primefac(n)])==2)
+
     # Setup smoother
-    c1, a1 = 0.99, 0.33
-    hfun = lambda N: (c1 / max(u0)) * (dx / dt) / N
-    smoother = RK2Smoother(a1, hfun)
+    nu = max(u0)*dt
+    smoother = RK2Smoother(L, nu)
 
     # Setup multigrid
-    pre, post, gamma = 5, 5, 1
+    pre, post, gamma = smoothpara
     mgpre = MultigridPreconditioner((n, n), interface, height, smoother, pre, post, gamma)
+    # mgpre = Preconditioner()
 
-    # Setup problem
+    # Setup and solve problem
     tk, uk, U = t0, u0, [u0]
     while tk < tf:
-        Func = lambda u: F(u, dt, dx, uk)
-        sols, res, nits, etas = JFNK(Func, uk, M=mgpre)
+        Func = lambda u: problems.F(u, dt, dx, uk)
+        sols, res, nits, etas = JFNK(Func, uk, rtol=1e-10, M=mgpre)
         uk = sols[-1]
 
         tk += dt
         U.append(uk)
-
-    # Plot
-    plot = False
-    if plot:
-        fig, ax = plt.subplots()
-        ax.plot(x, sols[-1], 'g')
-        ax.plot(x, u0, 'k')
-        plt.legend('u($t_0 + \Delta t$)', 'u($t_0$)')
-        plt.show()
-    else:
-        animate(x, U)
-    return
-
+    return sols, res, nits, etas
 
 def run_specs():
-    N = 2 ** np.array([8, 9, 10])
+    """
+    Solves problem for a few grid sizes and plots the residual and
+    number of inner GMRES iterations in each newton step
+    """
+    N = 2**np.array([7, 9, 11])
 
     nits = []
     residuals = []
     for n in N:
-        t, r, i = run_spec(n)
+        _, r, i, _ = solve_problem(n, height=np.log2(n)-1, interface=mg.AggregateInterface1D())
         residuals.append(r)
         nits.append(i)
 
@@ -73,68 +80,102 @@ def run_specs():
     legends = []
     colors = ['r', 'g', 'b']
 
-    fig, ax1 = plt.subplots()
-    ax2 = ax1.twinx()
+    fig, ax = plt.subplots(2, 1)
     for k in range(0, len(residuals)):
         col = colors[k]
-        marker = col + '--'
-        lines.append(ax1.semilogy(residuals[k], marker)[0])
+        marker = col + 'o--'
+        l0 = ax[0].semilogy(residuals[k], marker)[0]
+        l1 = ax[1].plot(nits[k], marker)
+        lines.append(l0)
         legends.append('n: {}'.format(N[k]))
-        ax2.plot(nits[k], col)
+
     plt.legend(lines, legends)
-    ax1.set_ylabel('Residual')
-    ax2.set_ylabel('Number of GMRES iterations')
-    ax1.set_xlabel('Newton iteration number')
-    plt.title('Plot over residual and number of GMRES iterations')
+
+    # Set labels
+    ax[0].set_ylabel('Residual')
+    ax[1].set_ylabel('GMRES iterations')
+    ax[1].set_xlabel('Newton iteration')
+
+    # Set tickmarks
+    max_newton = np.max([len(x) for x in residuals])
+    max_gmres = np.max([max(x) for x in nits])
+    xrange, yrange = np.arange(0, max_newton), np.arange(0, max_gmres + 1)
+    ax[0].set_xticks(xrange)
+    ax[1].set_xticks(xrange)
+    ax[1].set_yticks(yrange)
+
+    ax[0].grid(True)
+    ax[1].grid(True)
     plt.show()
 
-
-def run_and_animate():
-    L = 8
-    n = 2 ** 6
-    x = np.linspace(0, L, n+1)[1:]
-    Nt = 500
-    u = np.zeros((n ** 2, Nt + 1))
-    u[:, 0] = func_u02(x)
-
-    dt = 0.02
-    dx = L/n
-
-    print(min(u[:, 0]))
-    pseudo_step = calculate_pseudo_stepsize(max(u[:, 0]), dt, L, 0.99)
-    for k in range(0, Nt):
-        uk = u[:, k]
-        u[:, k + 1] = JFNK(lambda v: F2(v, dt, dx, uk), uk, multigrid_primer(0.33, pseudo_step))
-        print("Timestep {}/{}".format(k + 1, Nt))
-    np.save('2dburger.npy', u)
-    animate2d('2dburger.npy')
-
-
-def animate2d(name):
-    L = 8
-    u = np.load(name)
-    n = int(u[:, 1].shape[0] ** 0.5)
-    x = interval(n, length=L)
-    xx, yy = np.meshgrid(x, x)
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    for uk in u.T[:, ]:
-        plt.cla()
-        ax.plot_wireframe(xx, yy, uk.reshape((n, n)))
-        plt.pause(0.005)
-        plt.show()
-
-
 def animate(x, sols):
-    fig = plt.figure()
-    ax = plt.axes(xlim=(min(x), max(x)), ylim=(0, 4))
-    line, = ax.plot([], [])
-    for uk in sols:
-        line.set_data((x, uk))
-        plt.pause(0.05)
-        plt.show()
+    """
+    Animates solution!
+    """
+    fig, ax = plt.subplots()
+    xdata, ydata = x, sols[0]
+    ln, = plt.plot(xdata, ydata, 'g')
 
+    def init():
+        ax.set_xlim((np.min(x), np.max(x)))
+        ax.set_ylim((np.min(sols), np.max(sols)))
+        return ln,
 
-# run_spec(3*2**6, 4)
-run_spec(3*2**6, 3, interface=AggregateInterface1D())
+    def update(frame):
+        xdata = x
+        ydata = sols[frame]
+        ln.set_data(xdata, ydata)
+        return ln,
+
+    frames = np.arange(0, len(sols))
+
+    ani = FuncAnimation(fig, update, frames=frames, init_func=init, blit=True)
+
+    plt.show()
+
+def grid():
+    """ Investigates the number of pre- and post smoothing steps """
+    exponent = 12
+    n = 2**exponent
+    height = 10
+
+    pmax = 10
+    pre = np.arange(1, pmax)
+    pst = np.arange(1, pmax)
+    gam = 1
+
+    PRE, PST = np.meshgrid(pre, pst)
+    M, N, G = [], [], []
+    for re, st in zip(PRE.flatten(), PST.flatten()):
+        _, r, i, _ = solve_problem(n, height, smoothpara=(re, st, gam))
+
+        newtons = len(i)
+        gmress = sum(i)
+        matvecs = gmress*(1 + height*(re + st) + 2**(exponent - height)) + newtons
+
+        M.append(matvecs)
+        N.append(newtons)
+        G.append(gmress)
+    Xlist = (np.array(X).reshape(PRE.shape) for X in (M, N, G))
+    names = ('Matvecs', 'Newton', 'GMRES')
+
+    # Plot results
+    fig, axs = plt.subplots(1, 3)
+    fig.set_size_inches(14, 4)
+
+    cmap = plt.colormaps['magma']
+    for ax, X, name in zip(axs, Xlist, names):
+        levels = ticker.MaxNLocator(nbins=len(np.unique(X))).tick_values(X.min(), X.max())
+        norm = colors.BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+
+        cf = ax.pcolormesh(pre, pst, X, cmap=cmap, norm=norm)
+        ax.set_title(name)
+        fig.colorbar(cf, ax=ax)
+
+    axs[1].set_xlabel('Pre')
+    axs[0].set_ylabel('Post')
+
+    fig.tight_layout()
+    plt.show()
+
+grid()

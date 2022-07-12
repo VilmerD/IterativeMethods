@@ -3,7 +3,7 @@ import scipy.sparse.extract as ex
 
 from matrices.nonlinear_matricies import *
 from newton.newton import *
-from newton.preconditioners import *
+from newton.preconditionersv2 import *
 
 import matplotlib.pyplot as plt
 from time import time

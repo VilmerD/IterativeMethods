@@ -77,29 +77,6 @@ class TestGMRES(unittest.TestCase):
                 _, nits, _ = gmres(A, b, x0=x0)
                 self.assertGreaterEqual(1, nits)
 
-    def test_2_step_convergance(self):
-        """
-        Tests that GMRES converges in 2 steps or less given b is eigenvector to A^2
-        """
-        for i, (A, b) in enumerate(self.positive_definite_systems):
-            with self.subTest(i=i):
-                _, v = sla.eig(A.dot(A))
-                _, nits, _ = gmres(A, v[:, 0])
-                self.assertGreaterEqual(2, nits)
-    
-    def test_n_step_convergance(self):
-        """
-        Tests that GMRES converges in n steps or less given b is eigenvector to A^n
-        """
-        A, _ = self.positive_definite_systems[-1]
-        nspace = np.round(np.logspace(0, np.log10(A.shape[0])-1, 4))
-        nn = np.random.randint(nspace[:-1], nspace[1:])
-        for i, n in enumerate(nn):
-            with self.subTest(i=i):
-                _, v = sla.eig(np.linalg.matrix_power(A, n))
-                _, nits, _ = gmres(A, v[:, -1])
-                self.assertGreaterEqual(n, nits)
-
     def test_tolerance(self):
         """
         Tests that the tolerance is fulfilled

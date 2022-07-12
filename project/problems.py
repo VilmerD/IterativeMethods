@@ -15,7 +15,7 @@ def F(u, dt, dx, uold):
 
 
 @evalu0
-def func_u0(x):
+def u_ic(x):
     return 2 + np.sin(np.pi * x)
 
 
@@ -28,7 +28,7 @@ def F2(u, dt, dx, uold):
 
 
 @evalu0
-def func_u02(x):
+def u_ic_2D(x):
     n = x.shape[0]
     xx, yy = np.meshgrid(x, x)
     mat = 2 + 2*np.sin(np.pi / 8 * (xx - yy - 4)) * np.sin(np.pi / 8 * xx)

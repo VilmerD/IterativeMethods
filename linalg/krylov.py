@@ -3,7 +3,7 @@ from scipy.sparse import eye as speye
 import scipy.linalg as scla
 
 
-def gmres(A, b, tol=1e-9, x0=None, k_max=None, m_right=None, restart=False):
+def gmres(A, b, tol=1e-9, x0=None, k_max=None, m_right=None):
     """
     Solves the linear system of equations Ax = b using GMRES
 
@@ -37,9 +37,9 @@ def gmres(A, b, tol=1e-9, x0=None, k_max=None, m_right=None, restart=False):
     # Initial residual
     r0 = b - A.dot(x0)
     gamma = [scla.norm(r0)]
-    if gamma[0] < tol:
+    if gamma[0] < len(r0)**(1/2)*np.finfo(float).eps:
         x = x0
-        return x, 1, gamma[0]
+        return x, 0, 0
 
     # Allocate memory for krylov subspace and H
     v = [r0 / gamma[0]]
@@ -73,11 +73,10 @@ def gmres(A, b, tol=1e-9, x0=None, k_max=None, m_right=None, restart=False):
         gamma[j] = c[j]*gamma[j]
 
         # Check for convergance
-        if abs(gamma[j + 1]/gamma[0]) < tol:
-            break
-        else:
+        if abs(gamma[j + 1]) > tol:
             # Append next vector
             v.append(wj / h[j + 1, j])
+        else: break
     
     # Compute solution
     alpha = np.zeros((j + 1, 1))
@@ -87,12 +86,5 @@ def gmres(A, b, tol=1e-9, x0=None, k_max=None, m_right=None, restart=False):
         y += alpha[i] * v[i]
 
     # Recast to x and compute final quantities
-    x = m_right.dot(y)
-    ninner, relres = j+1, abs(gamma[j+1]/gamma[0])
-
-    # Restart if necessary
-    if restart and relres > tol:
-        x, ninner2, relres = gmres(A, b, tol=tol, x0=x, k_max=k_max, restart=False)
-        return x, ninner+ninner2, relres
-    else:
-        return x, ninner, relres
+    x, ninner, res = m_right.dot(y), j+1, abs(gamma[j+1])
+    return x, ninner, res

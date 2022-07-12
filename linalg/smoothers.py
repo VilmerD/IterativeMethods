@@ -6,13 +6,13 @@ class Smoother():
     def smooth(self, A, x, b): return x
 
 class RK2Smoother(Smoother):
-    def __init__(self, a1, hfun):
+    def __init__(self, L, nu, c=0.99, a1=0.33):
         self.a1 = a1
-        self.hfun = hfun
+        self.hfun = lambda N: c*(L/N)/nu
 
     def smooth(self, A, x, b):
-        a1, h = self.a1, self.hfun(A.shape[0])
-        return x + h*(A._matvec(x + a1*h*(A._matvec(x) - b)) - b)
+        h = self.hfun(A.shape[0])
+        return x + h*(b-A._matvec(x + self.a1*h*(b-A._matvec(x))))
 
 class GaussSeidelSmoother(Smoother):
     def smooth(self, a, x, b):
