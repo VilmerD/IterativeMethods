@@ -44,6 +44,7 @@ def NK(F, J, u0: np.array, rtol=1e-6, eta_max=0.1, max_it=10, M=None):
 
     # Initialize loop
     k, uk, fk, rk = 0, u0.copy(), f0, r0
+    print(f'Starting Newton with r0={r0}')
     while rk/r0 > rtol and k < max_it:
         # Linearize around current solution
         jk = J(uk, fk)
@@ -61,6 +62,10 @@ def NK(F, J, u0: np.array, rtol=1e-6, eta_max=0.1, max_it=10, M=None):
         for l, i in zip(lists, (uk, rk, ik, eta)): l.append(i)
         k += 1
 
+        # Update user
+        print(f'\t Step accepted (rkp1/rk={eta}) GMRES iterations: {ik}')
+    print(f'Newton converged (rk/r0={rtol})')
+    print(f'\t total GMRES iterations: {sum(lists[2])}\n')
     return lists
 
 def JFNK(F, u0: np.array, rtol=1e-6, eta_max=0.1, max_it=10, M=None):

@@ -1,35 +1,28 @@
+from re import X
 import numpy as np
 
 
 # Initial conditions
-def evalu0(func):
-    def eval_wrapper(x):
-        return (func(x) + func(np.roll(x, -1))) / 2
-
+def zero_periodic(func):
+    def eval_wrapper(x, *args):
+        fx = func(x, *args)
+        fxs = np.roll(fx, -1)
+        return (fx + fxs) / 2
     return eval_wrapper
 
+# Conservation law discretized
+def conservation_law_periodic(flux):
+    def wrapper(u, uold, dt, dx, *args):
+        return u - uold + dt/dx * (flux(u, *args) - flux(np.roll(u, -1), *args))
+    return wrapper
 
-# Fluxes
-def F(u, dt, dx, uold):
-    return u - uold + dt / (2 * dx) * (u ** 2 - np.roll(u, -1) ** 2)
+# Flux
+@conservation_law_periodic
+def flux(u):
+    """ Computes the flux of materia in 1D continuum """
+    return u**2/2
 
-
-@evalu0
-def u_ic(x):
+@zero_periodic
+def ua(x):
     return 2 + np.sin(np.pi * x)
 
-
-def F2(u, dt, dx, uold):
-    n = int(len(u) ** 0.5)
-    usqr = u ** 2
-    uoldsqr = uold ** 2
-    return u - uold + dt / (4 * dx) * (2 * usqr - np.roll(usqr, -n) - np.roll(usqr, -1)
-                                       + 2 * uoldsqr - np.roll(uoldsqr, -n) - np.roll(uoldsqr, -1))
-
-
-@evalu0
-def u_ic_2D(x):
-    n = x.shape[0]
-    xx, yy = np.meshgrid(x, x)
-    mat = 2 + 2*np.sin(np.pi / 8 * (xx - yy - 4)) * np.sin(np.pi / 8 * xx)
-    return mat.reshape((n ** 2,))

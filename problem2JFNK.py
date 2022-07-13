@@ -1,12 +1,11 @@
 # Numpy and scipy stuff
-from enum import unique
 import numpy as np
 
 # Problems
 import project.problems as problems
 
 # Newton solvers 
-from newton.newton import JFNK
+from integrate.integrate import implicit_euler
 from newton.precondition import MultigridPreconditioner
 
 # Multigrid
@@ -34,7 +33,7 @@ def solve_problem(n, height=None, interface=mg.AggregateInterface1D(), smoothpar
     x = np.linspace(0, L, n+1)[1:]
 
     # Initial condition
-    u0 = problems.u_ic(x)
+    u0 = problems.ua(x)
     dt = 0.01
     t0, tf = 0, dt
 
@@ -52,15 +51,10 @@ def solve_problem(n, height=None, interface=mg.AggregateInterface1D(), smoothpar
     # mgpre = Preconditioner()
 
     # Setup and solve problem
-    tk, uk, U = t0, u0, [u0]
-    while tk < tf:
-        Func = lambda u: problems.F(u, dt, dx, uk)
-        sols, res, nits, etas = JFNK(Func, uk, rtol=1e-10, M=mgpre)
-        uk = sols[-1]
-
-        tk += dt
-        U.append(uk)
-    return sols, res, nits, etas
+    F = lambda _, u, uk: problems.flux(u, uk, dt, dx)
+    U, R, N, E = implicit_euler(F, u0, (t0, tf), dt, 1e-10, mgpre)
+    return U, R[-1], N[-1], E[-1]
+    
 
 def run_specs():
     """
@@ -135,9 +129,9 @@ def animate(x, sols):
 
 def grid():
     """ Investigates the number of pre- and post smoothing steps """
-    exponent = 12
+    exponent = 8
     n = 2**exponent
-    height = 10
+    height = 8
 
     pmax = 10
     pre = np.arange(1, pmax)
