@@ -11,24 +11,24 @@ import linalg.multigrid as mg
 
 # Plotting
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 # Problem
 import project.problems as problems
 
 def conservation_law(flux):
-    def wrapper(u, uold, dt, dx, a, b, *args):
+    def wrapper(u, uold, dt, dx, a, *args):
         # Flux at u
         fu = flux(u, *args)
 
         # Flux shifted -1
-        fum1 = flux(np.roll(u, -1), *args)
-        fum1[0], fum1[-1] = a(u), b(u)        # Boundary fluxes
+        fum1 = flux(np.roll(u, 1), *args)
+        fum1[0] = a(u)       # Boundary fluxes
 
         return u - uold + dt/dx * (fu - fum1)
     return wrapper
 
 
-@problems.conservation_law_periodic
 def car_flux(u, umax=100, vmax=70):
     """ Describes the flux of cars per unit length """
     return car_speed(u, umax, vmax)*u
@@ -37,6 +37,11 @@ def car_flux(u, umax=100, vmax=70):
 def car_speed(u, umax, vmax):
     """ Describes car speed """
     return vmax*(1 - u/umax)
+
+
+def car_concentration(v, umax, vmax):
+    """ Returns car concentration given their speed """
+    return umax*(1 - v/vmax)
 
 
 def zero(func):
@@ -54,11 +59,11 @@ def zero2(func):
     return wrapper
 
 
-def ua(x, umax=1, padding=0):
-    u_m_padding = (x < -padding)*umax
-    u_padding = (np.abs(x) < padding)*(-x + padding)/(2*padding + 1e-9)*umax
-    u_p_padding = (x > padding)*0*umax
-    return u_m_padding + u_padding + u_p_padding
+def ua(x, umax=100, e=0):
+    u1 = (x < -e)*umax
+    u12pad = (np.abs(x) < e)*(x - (-e))/(2*e + 1e-9)*(0 - umax) + umax
+    u2 = (x > e)*0
+    return u1 + u12pad + u2
 
 
 def ub(x, umax):
@@ -66,12 +71,23 @@ def ub(x, umax):
     return upos*((x > x[0]*0.5)*1*(x < x[-1]*0.51)*1)
 
 
+def uc(x, D1, u0max, vi, vmax, e):
+    cc1 = car_concentration(vi, u0max, vmax)
+    u1 = (x - (-e) < 0)*cc1
+    u12pad = (np.abs(x) < e)*((x - (-e))/(2*e + 1e-9)*(u0max - cc1) + cc1)
+    
+    u2 = (x - e > 0)*(x - D1 < -e)*u0max
+    u23pad = (np.abs(x - D1) < e)*((x - (D1 - e))/(2*e + 1e-9)*(0 - u0max) + u0max)
+
+    u3 = (x - D1 > e)*(x > D1 + e)*0
+    return u1 + u12pad + u2 + u23pad + u3
+
+
 def plot_peicewise_constant(ax, xx, uu, *args):
     l = []
     for x, xp1, u, up1 in zip(xx[:-1], xx[1:], uu[:-1], uu[1:]):
-        lx, = ax.plot([x, xp1], [u, u], *args)
-        lxp1, = ax.plot([xp1, xp1], [u, up1], *args)
-        l.append((lx, lxp1))
+        lx, = ax.plot([x, xp1, xp1], [u, u, up1], *args)
+        l.append(lx)
     return l
 
 
@@ -100,6 +116,7 @@ def solve_problem(N):
 
     # Set up grid
     L = 100
+
     # Let xn denote the nth point, where x0 = -L, x(N+1) = L
     # ie xn = -L + n*dx, and x(N + 1) = -L + (N+1)dx = L
     dx = 2*L/(N + 1)
@@ -136,5 +153,87 @@ def plot_results(xx, U):
     plot_peicewise_constant(ax, xx, U[-1], 'k')
     plt.show()
 
+
+def animate(N):
+    # Problem variables
+    umax = 100      # cars per unit length
+    vmax = 70      # unit length per unit time
+
+    # Set up grid
+    L = 10e3        # meters
+
+    # Let xn denote the nth point, where x0 = -L, x(N+1) = L
+    # ie xn = -L + n*dx, and x(N + 1) = -L + (N+1)dx = L
+    dx = 2*L/(N + 1)
+    xx = np.linspace(-L, L, N + 1)
+
+    # Initial condition
+    # the k:th entry of u corresponds to the value in the cell
+    # bounded by xk and xk+1
+    D1, u0max, vi = L/2, 50, 60
+    u0 = zero2(uc)(xx, D1, u0max, vi, vmax, (2*L)/(N/2**1))
+    v0 = car_speed(u0, umax, vmax)*u0
+
+    # Integration
+    M, dt, t0 = 500, L/vmax/100, 0       # 1, 1
+
+    # Smoother
+    nu = np.max(car_speed(u0, umax, vmax)*u0)*dt
+    smoother = RK2Smoother(2*L, nu)
+    
+    # Multigrid
+    pre, post, gamma = 3, 3, 1
+    interface = mg.AggregateInterface1D()
+    mgpre = MultigridPreconditioner((N, N), interface, np.log2(N)-2, \
+        smoother, pre, post, gamma)
+
+    # Setup and solve problem
+    a = lambda u: car_flux(car_concentration(vi, umax, vmax), umax, vmax)
+    F = lambda _, u, uk : conservation_law(car_flux)(u, uk, dt, dx, a, umax, vmax)
+    tk, U = t0, [u0]
+
+    fig, axu = plt.subplots()
+    arts = plot_peicewise_constant(axu, xx, u0, 'k')
+    len1 = len(arts)
+
+    timeform = 'time: {:5.2f}'
+    # unitform = r' $\frac{L}{1000 \times v_{max}}$'
+    unitform = ''
+    txt = axu.text(1, 1, timeform.format(t0*vmax/L) + unitform, \
+        horizontalalignment='right', verticalalignment='bottom', \
+            transform=axu.transAxes)
+    
+    arts.append(txt)
+
+    def init():
+        axu.set_xlim((np.min(xx), np.max(xx)))
+        axu.set_ylim((0, umax))
+
+        axu.set_xticks([-L, 0, L])
+        axu.set_yticks([0, umax])
+
+        axu.set_xticklabels(['$-L$', '$0$', '$L$'])
+        axu.set_yticklabels(['$0$', r'$u_{max}$'])
+        return arts
+
+    def update(frame):
+        func = lambda u: F(tk, u, U[-1])
+        sols, _, _, _ = JFNK(func, U[-1], rtol=1e-10, M=mgpre)
+        uk = sols[-1]
+        vk = car_speed(uk, umax, vmax)*uk
+
+        for l, u, up1 in zip(arts[:len1], uk[:-1], uk[1:]):
+            l.set_ydata([u, u, up1])
+
+        U.append(uk)
+
+        arts[-1].set_text(timeform.format(frame*vmax/L) + unitform)
+        return arts
+
+    frames = t0 + dt*np.arange(0, M)
+    ani = FuncAnimation(fig, update, frames=frames, init_func=init, blit=False)
+
+    plt.show()
+
 if __name__=='__main__':
-    solve_problem(512)
+    animate(2**10)
