@@ -25,5 +25,6 @@ class JacobiSmoother(Smoother):
         self.w = w
 
     def smooth(self, a, x, b):
-        d = a.diagonal()[0]
-        return x - self.w * (a.dot(x) - b) / d
+        A = a.to_dense(x.shape[0])
+        d = A.diagonal()[0]
+        return x - self.w * (a._matvec(x) - b) / d

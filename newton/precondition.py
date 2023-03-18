@@ -13,7 +13,7 @@ class MultigridPreconditioner(Preconditioner):
         self.shape = shape
         v0 = np.zeros(shape[0])
         f0 = v0
-        multigrid = mg.Multigrid(v0, f0, grdif, height)
+        multigrid = mg.Multigrid(f0, grdif, height)
 
         multigrid.smoother = smoother
         multigrid.pre = pre
@@ -24,7 +24,8 @@ class MultigridPreconditioner(Preconditioner):
 
     def make(self, A):
         Ascl = mg.ScalableLinearOperator(A, self.multigrid.grdif)
-        solve = lambda x: self.multigrid.cycle(Ascl, x)
+        self.multigrid.setOperator(Ascl)
+        solve = lambda x: self.multigrid.cycle(f0=x, v0=np.zeros_like(x))
         return scspla.LinearOperator(self.shape, solve)
 
 class ILUPreconditioner(Preconditioner):
