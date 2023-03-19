@@ -26,12 +26,12 @@ from matplotlib.animation import FuncAnimation
 from time import time
 from primefac import primefac
 
-def MG2():
+def MG3():
     """"
         Solve 1d poisson using multigrid
     """
     # Define grid, n is number of interior points
-    n, L = 511, 1
+    n, L = 2**7-1, 1
     xx = np.linspace(0, L, n+2)
     xxinner = xx[1:-1]
 
@@ -49,47 +49,166 @@ def MG2():
     # Define preconditioner
     height, pre, post, gamma = 5, 4, 4, 1
     smoother = JacobiSmoother(w=2/3)
-    grid_interface = mg.DefaultInterface1D()
 
     # Make coarse grid representaions
     XXI = [xxinner]
+    AA = [spsl.aslinearoperator(A)]
+    Ik, Rk = mg.createDefaultInterpolator(n)
+    II = [Ik]
+    RR = [Rk]
     for k in range(1, height):
-        XXI.append(grid_interface.restrict(XXI[k-1]))
+        # Create interpolator and restrictor functions
+        nkp1 = II[k-1].shape[1]
+        Ikp1, Rkp1 = mg.createDefaultInterpolator(nkp1)
+        II.append(Ikp1)
+        RR.append(Rkp1)
+        # Compute coarse-grid representation
+        XXI.append(RR[k-1]*XXI[k-1])
+        # Compute coarse-grid operator
+        Ak = spsl.LinearOperator((nkp1, nkp1), lambda x: RR[k-1].matvec(AA[k-1].matvec(II[k-1].matvec(x))))
+        AA.append(Ak)
     
     # Setup plot
     fig, ax = plt.subplots(1, 1)
 
     # Cycle using mg
-    ncyc = 1
-    n0 = np.linalg.norm(r0)
-    vk = v0
-    rk = r0
-    ek = e0.copy()
-    print("Relative norm of residual at start: {}".format(n0))
-    for k in range(0, height):
+    def cycle(Akh, ekh, rkh):
+        # Plot error before presmoothing
+
         # Pre-smooth
-        for _ in range(0, pre): ek = smoother.smooth(A, ek, rk)
+        for _ in range(0, pre): ek = smoother.smooth(A, ekh, rkh)
+
+        # Plot error after presmoothing
 
         # Coarse-grid correction
-        rk_2h = grid_interface.restrict(rk - A*ek)
+        rk2h = grid_interface.restrict(rkh - A*ekh)
+        ek2h = cycle(rk2h)
+        ekh += grid_interface.prolong(ek2h)
+
+        # Plot error after coarse-grid correction
 
         # Post-smooth
         for _ in range(0, post): ek = smoother.smooth(A, ek, rk)
 
-        # Show results
-        rk = f0 - A.dot(vk)
-        ek = e0.copy()
-        nk = np.linalg.norm(rk)/n0
-        levelk = mgs.grid
-        for k in range(0, height):
-            ax.plot(XXI[k], levelk.v, label="e_{}".format(k))
-            levelk = levelk.next_level
+        # Plot error after post-smoothing
 
+        # Return error estimation
+        return ekh
+    
 
-    #ax.plot(xxinner, vk, label='Error')
-    #ax.plot(xxinner, f0, label='RHS')
     ax.set_ylabel("y")
     ax.set_xlabel("x")
+    plt.legend()
+    plt.show()
+
+def MG2():
+    """"
+        Solve 1d poisson using multigrid
+    """
+    # Define grid, n is number of interior points
+    n, L = 2**10-1, 1
+    xx = np.linspace(0, L, n+2)
+    xxinner = xx[1:-1]
+
+    # Define problem matrix
+    A = mats.poisson1d(n)
+
+    # Define initial error and residual
+    v0 = np.zeros_like(xxinner)
+    f0 = np.exp(-10*(xxinner - 0.50*L)**2)*(0 + \
+        +0.20*np.sin(987*np.pi*xxinner) * (231*np.pi)**2 + \
+        +0.20*np.sin(479*np.pi*xxinner) * (231*np.pi)**2 + \
+        +0.20*np.sin(231*np.pi*xxinner) * (231*np.pi)**2 + \
+        -0.30*np.sin(97*np.pi*xxinner) * (97*np.pi)**2+ \
+        +0.60*np.sin(51*np.pi*xxinner) * (51*np.pi)**2+ \
+        +1.00*np.sin(27*np.pi*xxinner) * (27*np.pi)**2+ \
+        +0.70*np.sin(13*np.pi*xxinner) * (13*np.pi)**2+ \
+        +1.00*np.sin(7*np.pi*xxinner) * (7*np.pi)**2)
+
+    # Define multigrid parameters
+    height, pre, post, gamma = 5, 6, 6, 1
+    smoother = JacobiSmoother(w=2/3)
+    grid_inter = mg.DefaultInterface1D()
+    A = mg.ScalableLinearOperator(spsl.aslinearoperator(A), grid_inter)
+
+    # Make coarse grid representaions
+    XXI = [xxinner]
+    Ik, Rk = mg.createDefaultInterpolator(n)
+    II = [Ik]
+    RR = [Rk]
+    for k in range(1, height):
+        # Compute coarse-grid representation
+        XXI.append(grid_inter.restrict(XXI[k-1]))
+
+    # Setup plot
+    fig, axs = plt.subplots(height, 4)
+    axs[0, 0].title.set_text("Before presmoothing")
+    axs[0, 1].title.set_text("After presmoothing")
+    axs[0, 2].title.set_text("After coarse-grid correction")
+    axs[0, 3].title.set_text("After post-smoothing")
+
+    axs[0, 0].set_ylabel("Level 0 [Finest]")
+    for k in range(1, height-1):
+        axs[k, 0].set_ylabel("Level {}".format(k))
+    axs[height-1, 0].set_ylabel("Level {} [Coarsest]".format(height-1))
+
+    for k in range(0, height):
+        for l in range(0, 4):
+            axs[k, l].set_ylim([-3, 3])
+            axs[k, l].set_xticks([0, 0.50, 1])
+            axs[k, l].set_yticks([-3, 0, 3])
+
+    # Cycle using mg
+    level = 0
+    def cycle(vkh, fkh, level):
+        if level != height - 1:
+            # Compute solution at level
+            ukh = np.linalg.solve(A.to_dense(fkh.shape[0]), fkh)
+
+            # Plot before pre-smoothing
+            axs[level, 0].plot(XXI[level], vkh, color='green')
+            axs[level, 0].plot(XXI[level], ukh - vkh, color='red')
+            #axs[level, 0].plot(XXI[level], vkh, color='green')
+
+            # Pre-smooth
+            for _ in range(0, pre): vkh = smoother.smooth(A, vkh, fkh)
+
+            # Plot error after presmoothing
+            axs[level, 1].plot(XXI[level], vkh, color='green')
+            axs[level, 1].plot(XXI[level], ukh - vkh, color='red')
+            #axs[level, 1].plot(XXI[level], vkh, color='green')
+
+            # Coarse-grid correction
+            for _ in range(0, gamma): 
+                fk2h = grid_inter.restrict(fkh - A._matvec(vkh))
+                vk2h = cycle(np.zeros_like(fk2h), fk2h, level+1)
+                vkh += grid_inter.prolong(vk2h)
+
+            # Plot error after coarse-grid correction
+            axs[level, 2].plot(XXI[level], vkh, color='green')
+            axs[level, 2].plot(XXI[level], ukh - vkh, color='red')
+            #axs[level, 2].plot(XXI[level], vkh, color='green')
+
+            # Post-smooth
+            for _ in range(0, post): vkh = smoother.smooth(A, vkh, fkh)
+            
+            # Plot error after post-smoothing
+            axs[level, 3].plot(XXI[level], vkh, color='green')
+            axs[level, 3].plot(XXI[level], ukh - vkh, color='red')
+            #axs[level, 3].plot(XXI[level], vkh, color='green')
+        else:
+            # Solve problem exactly on coarsest level
+            vkh = np.linalg.solve(A.to_dense(fkh.shape[0]), fkh)
+
+            # Plot error estimation on coarsest level
+            axs[level, 2].plot(XXI[level], vkh, color='green')
+            axs[level, 2].plot(XXI[level], np.zeros_like(vkh), color='red')
+            #axs[level, 2].plot(XXI[level], vkh, color='green')
+
+        # Return error estimation
+        return vkh
+    
+    cycle(v0, f0, 0)
     plt.legend()
     plt.show()
 
@@ -205,7 +324,6 @@ def visMG():
     vk = v0
     rk = r0
     ek = e0.copy()
-    print("Relative norm of residual at start: {}".format(n0/n0))
     for k in range(0, ncyc):
         # Get approximation of error
         ekapp = mgs.cycle(rk, ek)

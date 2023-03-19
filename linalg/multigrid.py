@@ -8,19 +8,18 @@ def createDefaultInterpolator(n_current: int):
     """ 
         Creates interpolator matrix for default interpolation
     """
-    n_finer = 2*n_current + 1
-    n_coarser = (n_current - 1)/2 
-    I = LinearOperator((n_finer, n_current), lambda x: default_prolong(x))
+    n_coarser = int((n_current - 1)/2) 
+    I = LinearOperator((n_current, n_coarser), lambda x: default_prolong(x))
     R = LinearOperator((n_coarser, n_current), lambda x: default_restrict(x))
     return I, R
 
-def default_restrict(self, v):
+def default_restrict(v):
     if (v.shape[0] - 1) % 2 == 0:
         return (v[0:-2:2] + 2 * v[1:-1:2] + v[2::2]) / 4
     else:
         raise ValueError()
 
-def default_prolong(self, v):
+def default_prolong(v):
     u = np.zeros(len(v) * 2 + 1)
     u[1:-1:2] = v
     return (2 * u + np.roll(u, 1) + np.roll(u, -1)) / 2
