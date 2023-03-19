@@ -24,6 +24,9 @@ def default_prolong(v):
     u[1:-1:2] = v
     return (2 * u + np.roll(u, 1) + np.roll(u, -1)) / 2
 
+def createDefaultInterpolatorMat(n_current: int):
+    pass
+
 class GridInterface():
     def restrict(self, v) -> np.array: pass
     def prolong(self, v) -> np.array: pass

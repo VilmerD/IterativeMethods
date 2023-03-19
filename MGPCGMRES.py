@@ -114,19 +114,28 @@ def MG2():
     A = mats.poisson1d(n)
 
     # Define initial error and residual
+    loadcase = 0
+    if loadcase == 0:
+        u = np.exp(-20*(xxinner - 0.50*L)**2)*(0 + \
+            +0.40*np.sin(567*np.pi*xxinner) + \
+            +0.20*np.sin(359*np.pi*xxinner) + \
+            -0.30*np.sin(231*np.pi*xxinner) + \
+            -0.30*np.cos(97*np.pi*xxinner) + \
+            +0.60*np.sin(51*np.pi*xxinner) + \
+            +1.00*np.cos(27*np.pi*xxinner) + \
+            +0.70*np.sin(13*np.pi*xxinner) + \
+            -1.00*np.cos(7*np.pi*xxinner))
+    elif loadcase == 1:
+        u = (3*(xxinner <= 0.33) - 3*(xxinner < 0.10)) - (3*(xxinner > 0.66) - 3*(xxinner >= 0.90))
+    elif loadcase == 2:
+        u = 3*np.exp(-200*(xxinner - 0.25*L)**2)*(np.sin(np.pi*xxinner*567) + np.sin(np.pi*xxinner*359)) - \
+            3*np.exp(-200*(xxinner - 0.75*L)**2)*(1*np.sin(np.pi*(xxinner - 0.75*L)*27) - 1*np.sin(np.pi*(xxinner - 0.75*L)*3))
+    
     v0 = np.zeros_like(xxinner)
-    f0 = np.exp(-10*(xxinner - 0.50*L)**2)*(0 + \
-        +0.20*np.sin(987*np.pi*xxinner) * (231*np.pi)**2 + \
-        +0.20*np.sin(479*np.pi*xxinner) * (231*np.pi)**2 + \
-        +0.20*np.sin(231*np.pi*xxinner) * (231*np.pi)**2 + \
-        -0.30*np.sin(97*np.pi*xxinner) * (97*np.pi)**2+ \
-        +0.60*np.sin(51*np.pi*xxinner) * (51*np.pi)**2+ \
-        +1.00*np.sin(27*np.pi*xxinner) * (27*np.pi)**2+ \
-        +0.70*np.sin(13*np.pi*xxinner) * (13*np.pi)**2+ \
-        +1.00*np.sin(7*np.pi*xxinner) * (7*np.pi)**2)
+    f0 = A*u
 
     # Define multigrid parameters
-    height, pre, post, gamma = 5, 6, 6, 1
+    height, pre, post, gamma = 6, 5, 5, 1
     smoother = JacobiSmoother(w=2/3)
     grid_inter = mg.DefaultInterface1D()
     A = mg.ScalableLinearOperator(spsl.aslinearoperator(A), grid_inter)
@@ -142,8 +151,8 @@ def MG2():
 
     # Setup plot
     fig, axs = plt.subplots(height, 4)
-    axs[0, 0].title.set_text("Before presmoothing")
-    axs[0, 1].title.set_text("After presmoothing")
+    axs[0, 0].title.set_text("Before pre-smoothing")
+    axs[0, 1].title.set_text("After pre-smoothing")
     axs[0, 2].title.set_text("After coarse-grid correction")
     axs[0, 3].title.set_text("After post-smoothing")
 
@@ -154,9 +163,13 @@ def MG2():
 
     for k in range(0, height):
         for l in range(0, 4):
-            axs[k, l].set_ylim([-3, 3])
+            axs[k, l].set_xlim([0, L])
+            axs[k, l].set_ylim([-4, 4])
             axs[k, l].set_xticks([0, 0.50, 1])
-            axs[k, l].set_yticks([-3, 0, 3])
+            axs[k, l].set_yticks([-4, 0, 4])
+            nk = XXI[k].shape[0]
+            lk = 4*L / (nk + 1)
+            #axs[k, l].plot([L-lk, L], [1.5, 1.5], color='black')
 
     # Cycle using mg
     level = 0
